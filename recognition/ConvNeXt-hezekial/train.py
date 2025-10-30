@@ -23,13 +23,14 @@ from modules import build_convnext_tiny, freeze_backbone
 
 DEFAULT_DATA_ROOT = Path("/home/groups/comp3710/ADNI/AD_NC")
 DEFAULT_METADATA_PATH = Path("/home/groups/comp3710/ADNI/meta_data_with_label.json")
+DEFAULT_OUTPUT_DIR = Path("results")
 
 @dataclass
 class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
-    output_dir: Path
-    epochs: int = 20
+    output_dir: Path = DEFAULT_OUTPUT_DIR
+    epochs: int = 10
     batch_size: int = 16
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
@@ -65,10 +66,10 @@ def parse_args() -> TrainConfig:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("results"),
+        default=DEFAULT_OUTPUT_DIR,
         help="Directory for checkpoints, plots, and metrics.",
     )
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-2)

@@ -3,6 +3,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --gres=gpu:a100
+#SBATCH --time=00:20:00
 #SBATCH --job-name=convnext
 #SBATCH -o results/results.out
 
