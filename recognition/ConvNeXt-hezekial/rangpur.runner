@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
-#SBATCH --gres=gpu:a100
-#SBATCH --time=00:20:00
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:a100:1
+#SBATCH --partition=a100
+#SBATCH --time=08:00:00
 #SBATCH --job-name=convnext
 #SBATCH -o results/results.out
 

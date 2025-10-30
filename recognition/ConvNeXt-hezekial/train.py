@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -30,9 +31,9 @@ class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 8
+    epochs: int = 50
     batch_size: int = 16
-    learning_rate: float = 1e-4
+    learning_rate: float = 5e-5
     weight_decay: float = 1e-2
     valid_split: float = 0.1
     seed: int = 42
@@ -336,8 +337,6 @@ def main() -> None:
         history["train_acc"].append(train_metrics["accuracy"])
         history["val_loss"].append(val_metrics["loss"])
         history["val_acc"].append(val_metrics["accuracy"])
-
-        scheduler.step()
 
         elapsed = time.time() - start_time
         print(
