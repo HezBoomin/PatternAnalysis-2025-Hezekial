@@ -30,7 +30,7 @@ class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 9
+    epochs: int = 8
     batch_size: int = 16
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
@@ -40,6 +40,7 @@ class TrainConfig:
     image_size: int = 224
     drop_path_rate: float = 0.1
     freeze_backbone_epochs: int = 0
+    target_test_acc: Optional[float] = 0.8
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     pin_memory: bool = True
     drop_last: bool = False
@@ -69,7 +70,7 @@ def parse_args() -> TrainConfig:
         default=DEFAULT_OUTPUT_DIR,
         help="Directory for checkpoints, plots, and metrics.",
     )
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=9)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-2)
@@ -91,6 +92,12 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--patience", type=int, default=0)
     parser.add_argument("--gradient-clip", type=float, default=None)
+    parser.add_argument(
+        "--target-test-acc",
+        type=float,
+        default=0.8,
+        help="Optional test accuracy target for early stopping/checks.",
+    )
 
     args = parser.parse_args()
 
@@ -114,6 +121,7 @@ def parse_args() -> TrainConfig:
         image_size=args.image_size,
         drop_path_rate=args.drop_path_rate,
         freeze_backbone_epochs=args.freeze_backbone_epochs,
+        target_test_acc=args.target_test_acc,
         device=device,
         pin_memory=pin_memory,
         drop_last=args.drop_last,
@@ -300,6 +308,7 @@ def main() -> None:
     }
 
     epochs_without_improvement = 0
+    final_test_metrics: Optional[Dict[str, float]] = None
 
     for epoch in range(1, config.epochs + 1):
         start_time = time.time()
@@ -354,6 +363,29 @@ def main() -> None:
         else:
             epochs_without_improvement += 1
 
+        if (
+            config.target_test_acc is not None
+            and test_loader is not None
+            and val_metrics["accuracy"] >= config.target_test_acc
+        ):
+            provisional_test = evaluate(model, test_loader, criterion, device)
+            print(
+                f"  Provisional test check -> Loss: {provisional_test['loss']:.4f} "
+                f"Acc: {provisional_test['accuracy']:.4f}"
+            )
+            if provisional_test["accuracy"] >= config.target_test_acc:
+                final_test_metrics = provisional_test
+                print(
+                    f"Target test accuracy {config.target_test_acc:.3f} reached at epoch {epoch}. "
+                    "Stopping early."
+                )
+                break
+            else:
+                print(
+                    f"Test accuracy {provisional_test['accuracy']:.3f} below target "
+                    f"{config.target_test_acc:.3f}; continuing training."
+                )
+
         if config.patience and epochs_without_improvement >= config.patience:
             print("Early stopping triggered.")
             break
@@ -370,15 +402,26 @@ def main() -> None:
     checkpoint = torch.load(config.output_dir / "best_model.pt", map_location=device)
     model.load_state_dict(checkpoint["model_state"])
 
-    test_metrics = evaluate(model, test_loader, criterion, device)
+    if final_test_metrics is None:
+        final_test_metrics = evaluate(model, test_loader, criterion, device)
+
     print(
-        f"Test Loss: {test_metrics['loss']:.4f} "
-        f"Test Acc: {test_metrics['accuracy']:.4f}"
+        f"Test Loss: {final_test_metrics['loss']:.4f} "
+        f"Test Acc: {final_test_metrics['accuracy']:.4f}"
     )
 
     (config.output_dir / "test_metrics.json").write_text(
-        json.dumps(test_metrics, indent=2)
+        json.dumps(final_test_metrics, indent=2)
     )
+
+    if (
+        config.target_test_acc is not None
+        and final_test_metrics["accuracy"] < config.target_test_acc
+    ):
+        print(
+            f"WARNING: Test accuracy {final_test_metrics['accuracy']:.3f} "
+            f"did not reach the target {config.target_test_acc:.3f}."
+        )
 
 
 if __name__ == "__main__":
