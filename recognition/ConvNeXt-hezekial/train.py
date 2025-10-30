@@ -30,7 +30,7 @@ class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 10
+    epochs: int = 9
     batch_size: int = 16
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
