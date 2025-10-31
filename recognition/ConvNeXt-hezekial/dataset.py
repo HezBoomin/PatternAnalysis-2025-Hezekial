@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
@@ -116,13 +117,43 @@ def create_default_transforms(
             transforms.Grayscale(num_output_channels=3),
             transforms.RandomResizedCrop(
                 image_size,
-                scale=(0.8, 1.0),
-                ratio=(0.9, 1.1),
+                scale=(0.75, 1.0),
+                ratio=(0.85, 1.15),
                 interpolation=InterpolationMode.BICUBIC,
             ),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=10, fill=0),
+            transforms.RandomApply(
+                [
+                    transforms.RandomAffine(
+                        degrees=7,
+                        translate=(0.06, 0.06),
+                        scale=(0.85, 1.15),
+                        shear=7,
+                        fill=0,
+                    )
+                ],
+                p=0.5,
+            ),
+            transforms.RandomApply(
+                [
+                    transforms.ColorJitter(
+                        brightness=0.15,
+                        contrast=0.15,
+                        saturation=0.0,
+                        hue=0.0,
+                    )
+                ],
+                p=0.4,
+            ),
+            transforms.RandomAdjustSharpness(sharpness_factor=1.5, p=0.3),
+            transforms.RandomAutocontrast(p=0.3),
             transforms.ToTensor(),
+            transforms.RandomErasing(
+                p=0.25,
+                scale=(0.02, 0.15),
+                ratio=(0.3, 3.3),
+                value="random",
+            ),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
     else:
@@ -294,6 +325,7 @@ def create_dataloaders(
     seed: int = 42,
     pin_memory: bool = True,
     drop_last: bool = False,
+    balance_classes: bool = False,
 ) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
     """
     Convenience function returning ``(train_loader, val_loader, test_loader)``.
@@ -358,10 +390,25 @@ def create_dataloaders(
         val_dataset = None
         val_loader = None
 
+    train_sampler = None
+    if balance_classes:
+        label_counts = Counter(sample.label for sample in train_dataset.samples)
+        if len(label_counts) > 1:
+            weights = torch.tensor(
+                [1.0 / label_counts[sample.label] for sample in train_dataset.samples],
+                dtype=torch.double,
+            )
+            train_sampler = WeightedRandomSampler(
+                weights,
+                num_samples=len(train_dataset.samples),
+                replacement=True,
+            )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=drop_last,

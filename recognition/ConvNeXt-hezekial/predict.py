@@ -12,7 +12,7 @@ import torch
 from PIL import Image
 
 from dataset import create_default_transforms
-from modules import build_convnext_tiny
+from modules import build_convnext_small
 
 
 DEFAULT_CHECKPOINT = Path("results/best_model.pt")
@@ -24,7 +24,7 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run ConvNeXt-Tiny inference on ADNI brain slices."
+        description="Run ConvNeXt-Small inference on ADNI brain slices."
     )
     parser.add_argument(
         "--images",
@@ -64,9 +64,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model(checkpoint: Path, device: torch.device) -> torch.nn.Module:
-    model = build_convnext_tiny(num_classes=2, in_chans=3)
+    model = build_convnext_small(num_classes=2, in_chans=3)
     state = torch.load(checkpoint, map_location=device)
-    state_dict = state.get("model_state", state)
+    if "ema_state" in state:
+        state_dict = state["ema_state"]
+    elif "model_state" in state:
+        state_dict = state["model_state"]
+    else:
+        state_dict = state
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()

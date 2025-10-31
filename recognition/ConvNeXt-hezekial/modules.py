@@ -12,8 +12,8 @@ __all__ = [
     "DropPath",
     "ConvNeXtBlock",
     "ConvNeXtStage",
-    "ConvNeXtTiny",
-    "build_convnext_tiny",
+    "ConvNeXtSmall",
+    "build_convnext_small",
     "freeze_backbone",
     "load_checkpoint",
 ]
@@ -126,18 +126,19 @@ class ConvNeXtConfig:
     drop_path_rate: float = 0.1
     num_classes: int = 2
     in_chans: int = 3
+    head_dropout: float = 0.0
 
 
-class ConvNeXtTiny(nn.Module):
+class ConvNeXtSmall(nn.Module):
     """
-    ConvNeXt-Tiny backbone + classification head tailored for AD vs NC tasks.
+    ConvNeXt-Small backbone + classification head tailored for AD vs NC tasks.
     """
 
     def __init__(self, config: Optional[ConvNeXtConfig] = None) -> None:
         super().__init__()
         if config is None:
             config = ConvNeXtConfig(
-                depths=(3, 3, 9, 3),
+                depths=(3, 3, 27, 3),
                 dims=(96, 192, 384, 768),
             )
         self.config = config
@@ -176,7 +177,10 @@ class ConvNeXtTiny(nn.Module):
             self.stages.append(stage)
 
         self.norm = nn.LayerNorm(dims[-1], eps=1e-6)
-        self.head = nn.Linear(dims[-1], config.num_classes)
+        self.head = nn.Sequential(
+            nn.Dropout(config.head_dropout),
+            nn.Linear(dims[-1], config.num_classes),
+        )
         self.apply(self._init_weights)
 
     @staticmethod
@@ -203,28 +207,30 @@ class ConvNeXtTiny(nn.Module):
         return self.head(x)
 
 
-def build_convnext_tiny(
+def build_convnext_small(
     *,
     num_classes: int = 2,
     in_chans: int = 3,
-    drop_path_rate: float = 0.1,
+    drop_path_rate: float = 0.2,
     layer_scale_init_value: float = 1e-6,
-) -> ConvNeXtTiny:
+    head_dropout: float = 0.3,
+) -> ConvNeXtSmall:
     """
-    Factory function to create a ConvNeXt-Tiny model with custom heads.
+    Factory function to create a ConvNeXt-Small model with custom heads.
     """
     config = ConvNeXtConfig(
-        depths=(3, 3, 9, 3),
+        depths=(3, 3, 27, 3),
         dims=(96, 192, 384, 768),
         layer_scale_init_value=layer_scale_init_value,
         drop_path_rate=drop_path_rate,
         num_classes=num_classes,
         in_chans=in_chans,
+        head_dropout=head_dropout,
     )
-    return ConvNeXtTiny(config=config)
+    return ConvNeXtSmall(config=config)
 
 
-def freeze_backbone(model: ConvNeXtTiny, train_head_only: bool = True) -> None:
+def freeze_backbone(model: ConvNeXtSmall, train_head_only: bool = True) -> None:
     """
     Optionally freeze backbone parameters. Useful for transfer learning when
     fine-tuning on limited medical imaging data.
