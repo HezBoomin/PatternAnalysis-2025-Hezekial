@@ -33,7 +33,7 @@ class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 50
+    epochs: int = 200
     batch_size: int = 16
     learning_rate: float = 2e-5
     weight_decay: float = 3e-3
@@ -66,7 +66,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--metadata-path", type=Path, default=DEFAULT_METADATA_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate.")
     parser.add_argument("--weight-decay", type=float, default=3e-3)
