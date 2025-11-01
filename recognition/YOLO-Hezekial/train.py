@@ -40,7 +40,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="results",
         help="Directory used for experiment artefacts (checkpoints, plots, logs).",
     )
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs.")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for training.")
     parser.add_argument("--val-split", type=float, default=0.2, help="Fraction reserved for validation.")
     parser.add_argument("--seed", type=int, default=13, help="Random seed for deterministic splits.")
