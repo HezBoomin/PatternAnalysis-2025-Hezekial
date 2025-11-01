@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -44,7 +44,7 @@ class DataModuleConfig:
     Parameters controlling dataset creation and dataloader construction.
     """
 
-    paths: ISICDatasetPaths = ISICDatasetPaths()
+    paths: ISICDatasetPaths = field(default_factory=ISICDatasetPaths)
     val_split: float = 0.2
     seed: int = 13
     batch_size: int = 4

@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:a100
 #SBATCH --partition=a100
 #SBATCH --mail-user=s4905846@uq.edu.au
-#SBATCH --Time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --mail-type=BEGIN
 #SBATCH --mail-type=END
 #SBATCH --mail-type=FAIL
