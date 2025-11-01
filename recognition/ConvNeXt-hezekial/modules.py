@@ -6,6 +6,12 @@ from typing import Dict, Iterable, Optional, Tuple
 import torch
 import torch.nn as nn
 
+try:  # optional torchvision support for pretrained weights
+    from torchvision.models import ConvNeXt_Small_Weights, convnext_small as tv_convnext_small
+except Exception:  # pragma: no cover
+    ConvNeXt_Small_Weights = None
+    tv_convnext_small = None
+
 
 __all__ = [
     "LayerNorm2d",
@@ -214,10 +220,33 @@ def build_convnext_small(
     drop_path_rate: float = 0.2,
     layer_scale_init_value: float = 1e-6,
     head_dropout: float = 0.3,
-) -> ConvNeXtSmall:
+    pretrained: bool = True,
+) -> nn.Module:
     """
-    Factory function to create a ConvNeXt-Small model with custom heads.
+    Factory function to create a ConvNeXt-Small model with optional ImageNet pretraining.
     """
+    if pretrained and tv_convnext_small is not None and ConvNeXt_Small_Weights is not None:
+        weights = ConvNeXt_Small_Weights.IMAGENET1K_V1
+        model = tv_convnext_small(weights=weights)
+        in_features = model.classifier[-1].in_features
+        model.classifier = nn.Sequential(
+            nn.Flatten(1),
+            nn.LayerNorm(in_features, eps=1e-6),
+            nn.Dropout(head_dropout),
+            nn.Linear(in_features, num_classes),
+        )
+        if in_chans != 3:
+            first_conv: nn.Conv2d = model.features[0][0]
+            if in_chans == 1:
+                new_weight = first_conv.weight.mean(dim=1, keepdim=True)
+            else:
+                new_weight = first_conv.weight.mean(dim=1, keepdim=True).repeat(1, in_chans, 1, 1)
+            first_conv = nn.Conv2d(in_chans, first_conv.out_channels, kernel_size=first_conv.kernel_size, stride=first_conv.stride)
+            first_conv.weight.data = new_weight
+            first_conv.bias.data.zero_()
+            model.features[0][0] = first_conv
+        return model
+
     config = ConvNeXtConfig(
         depths=(3, 3, 27, 3),
         dims=(96, 192, 384, 768),
@@ -227,19 +256,39 @@ def build_convnext_small(
         in_chans=in_chans,
         head_dropout=head_dropout,
     )
-    return ConvNeXtSmall(config=config)
+    model = ConvNeXtSmall(config=config)
+    model.classifier = nn.Sequential(
+        nn.LayerNorm(config.dims[-1], eps=1e-6),
+        nn.Dropout(head_dropout),
+        nn.Linear(config.dims[-1], num_classes),
+    )
+    return model
 
 
-def freeze_backbone(model: ConvNeXtSmall, train_head_only: bool = True) -> None:
+def freeze_backbone(model: nn.Module, train_head_only: bool = True) -> None:
     """
-    Optionally freeze backbone parameters. Useful for transfer learning when
-    fine-tuning on limited medical imaging data.
+    Optionally freeze backbone parameters. Works for both the custom ConvNeXt implementation
+    and torchvision's convnext_small.
     """
-    for name, param in model.named_parameters():
-        if train_head_only and name.startswith("head"):
-            param.requires_grad = True
-        else:
-            param.requires_grad = not train_head_only
+    if not train_head_only:
+        for param in model.parameters():
+            param.requires_grad_(True)
+        return
+
+    for param in model.parameters():
+        param.requires_grad_(False)
+
+    head_modules = []
+    if hasattr(model, "head"):
+        head_modules.append(model.head)
+    if hasattr(model, "classifier"):
+        head_modules.append(model.classifier)
+
+    for module in head_modules:
+        if module is None:
+            continue
+        for param in module.parameters():
+            param.requires_grad_(True)
 
 
 def load_checkpoint(

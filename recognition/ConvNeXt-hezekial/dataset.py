@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
@@ -325,7 +324,7 @@ def create_dataloaders(
     seed: int = 42,
     pin_memory: bool = True,
     drop_last: bool = False,
-    balance_classes: bool = False,
+    augment_fraction: float = 0.5,
 ) -> Tuple[DataLoader, Optional[DataLoader], DataLoader]:
     """
     Convenience function returning ``(train_loader, val_loader, test_loader)``.
@@ -359,11 +358,11 @@ def create_dataloaders(
         train_subset = [train_dataset_full.samples[idx] for idx in train_indices]
         val_subset = [train_dataset_full.samples[idx] for idx in val_indices]
 
-        train_dataset = ADNIDataset(
+        train_dataset_base = ADNIDataset(
             data_root,
             split="train",
             metadata=metadata,
-            transform=train_transform,
+            transform=eval_transform,
             samples=train_subset,
         )
         val_dataset = ADNIDataset(
@@ -373,6 +372,25 @@ def create_dataloaders(
             transform=eval_transform,
             samples=val_subset,
         )
+
+        if augment_fraction > 0:
+            generator = torch.Generator().manual_seed(seed)
+            num_aug = max(1, int(len(train_dataset_base) * augment_fraction))
+            aug_indices = torch.randperm(len(train_dataset_base), generator=generator)[
+                :num_aug
+            ].tolist()
+            aug_samples = [train_dataset_base.samples[idx] for idx in aug_indices]
+            augmented_dataset = ADNIDataset(
+                data_root,
+                split="train",
+                metadata=metadata,
+                transform=train_transform,
+                samples=aug_samples,
+            )
+            train_dataset = ConcatDataset([train_dataset_base, augmented_dataset])
+        else:
+            train_dataset = train_dataset_base
+
         val_loader: Optional[DataLoader] = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -381,34 +399,36 @@ def create_dataloaders(
             pin_memory=pin_memory,
         )
     else:
-        train_dataset = ADNIDataset(
+        train_dataset_base = ADNIDataset(
             data_root,
             split="train",
             metadata=metadata,
-            transform=train_transform,
+            transform=eval_transform,
         )
+        if augment_fraction > 0:
+            generator = torch.Generator().manual_seed(seed)
+            num_aug = max(1, int(len(train_dataset_base) * augment_fraction))
+            aug_indices = torch.randperm(len(train_dataset_base), generator=generator)[
+                :num_aug
+            ].tolist()
+            aug_samples = [train_dataset_base.samples[idx] for idx in aug_indices]
+            augmented_dataset = ADNIDataset(
+                data_root,
+                split="train",
+                metadata=metadata,
+                transform=train_transform,
+                samples=aug_samples,
+            )
+            train_dataset = ConcatDataset([train_dataset_base, augmented_dataset])
+        else:
+            train_dataset = train_dataset_base
         val_dataset = None
         val_loader = None
-
-    train_sampler = None
-    if balance_classes:
-        label_counts = Counter(sample.label for sample in train_dataset.samples)
-        if len(label_counts) > 1:
-            weights = torch.tensor(
-                [1.0 / label_counts[sample.label] for sample in train_dataset.samples],
-                dtype=torch.double,
-            )
-            train_sampler = WeightedRandomSampler(
-                weights,
-                num_samples=len(train_dataset.samples),
-                replacement=True,
-            )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
+        shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=drop_last,

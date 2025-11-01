@@ -5,18 +5,16 @@ import json
 import math
 import random
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
-from copy import deepcopy
-import shutil
-import tempfile
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -29,114 +27,77 @@ DEFAULT_DATA_ROOT = Path("/home/groups/comp3710/ADNI/AD_NC")
 DEFAULT_METADATA_PATH = Path("/home/groups/comp3710/ADNI/meta_data_with_label.json")
 DEFAULT_OUTPUT_DIR = Path("results")
 
+
 @dataclass
 class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 100
+    epochs: int = 50
     batch_size: int = 16
-    learning_rate: float = 3e-5
-    weight_decay: float = 1e-2
+    learning_rate: float = 2e-5
+    weight_decay: float = 3e-3
     valid_split: float = 0.1
     seed: int = 42
-    num_workers: int = 4
+    num_workers: int = 0
     image_size: int = 224
     drop_path_rate: float = 0.2
     head_dropout: float = 0.3
     freeze_backbone_epochs: int = 2
-    target_test_acc: Optional[float] = 0.8
-    warmup_epochs: int = 2
+    label_smoothing: float = 0.05
+    patience: int = 8
+    gradient_clip: Optional[float] = 1.0
+    augment_fraction: float = 0.3
+    warmup_epochs: int = 5
     min_lr: float = 1e-6
     mixup_alpha: float = 0.3
     mixup_prob: float = 0.5
     cutmix_alpha: float = 1.0
     cutmix_prob: float = 0.3
     ema_decay: float = 0.999
-    mixup_decay: bool = True
-    cutmix_decay: bool = True
-    finetune_epochs: int = 5
-    finetune_lr_factor: float = 1.0
-    balance_classes: bool = True
-    save_optimizer: bool = False
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     pin_memory: bool = True
     drop_last: bool = False
-    label_smoothing: float = 0.05
-    patience: int = 5  # 0 disables early stopping
-    gradient_clip: Optional[float] = 1.0
     history: Dict[str, Iterable[float]] = field(default_factory=dict, init=False)
 
 
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser(description="Train ConvNeXt-Small on ADNI slices.")
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=DEFAULT_DATA_ROOT,
-        help="Directory containing train/ and test/ subfolders.",
-    )
-    parser.add_argument(
-        "--metadata-path",
-        type=Path,
-        default=DEFAULT_METADATA_PATH,
-        help="Optional path to meta_data_with_label.json.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help="Directory for checkpoints, plots, and metrics.",
-    )
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--metadata-path", type=Path, default=DEFAULT_METADATA_PATH)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate.")
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
+    parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate.")
+    parser.add_argument("--weight-decay", type=float, default=3e-3)
     parser.add_argument("--valid-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--drop-path-rate", type=float, default=0.2)
     parser.add_argument("--head-dropout", type=float, default=0.3)
-    parser.add_argument(
-        "--freeze-backbone-epochs",
-        type=int,
-        default=2,
-        help="Number of initial epochs to train the final head only.",
-    )
-    parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--pin-memory", action="store_true")
-    parser.add_argument("--no-pin-memory", action="store_true")
-    parser.add_argument("--drop-last", action="store_true")
+    parser.add_argument("--freeze-backbone-epochs", type=int, default=2)
     parser.add_argument("--label-smoothing", type=float, default=0.05)
-    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
-    parser.add_argument(
-        "--target-test-acc",
-        type=float,
-        default=0.8,
-        help="Optional test accuracy target for early stopping/checks.",
-    )
-    parser.add_argument("--warmup-epochs", type=int, default=2)
+    parser.add_argument("--augment-fraction", type=float, default=0.3)
+    parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--mixup-alpha", type=float, default=0.3)
     parser.add_argument("--mixup-prob", type=float, default=0.5)
     parser.add_argument("--cutmix-alpha", type=float, default=1.0)
     parser.add_argument("--cutmix-prob", type=float, default=0.3)
     parser.add_argument("--ema-decay", type=float, default=0.999)
-    parser.add_argument("--save-optimizer", action="store_true")
-    parser.add_argument("--no-mixup-decay", action="store_true")
-    parser.add_argument("--no-cutmix-decay", action="store_true")
-    parser.add_argument("--finetune-epochs", type=int, default=5)
-    parser.add_argument("--finetune-lr-factor", type=float, default=1.0)
-    parser.add_argument("--no-balance-classes", action="store_true")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--pin-memory", action="store_true")
+    parser.add_argument("--no-pin-memory", action="store_true")
+    parser.add_argument("--drop-last", action="store_true")
 
     args = parser.parse_args()
-
     if args.pin_memory and args.no_pin_memory:
         raise ValueError("Cannot set both --pin-memory and --no-pin-memory.")
-    pin_memory = args.pin_memory or (not args.no_pin_memory)
 
+    pin_memory = args.pin_memory or (not args.no_pin_memory)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     return TrainConfig(
@@ -154,7 +115,10 @@ def parse_args() -> TrainConfig:
         drop_path_rate=args.drop_path_rate,
         head_dropout=args.head_dropout,
         freeze_backbone_epochs=args.freeze_backbone_epochs,
-        target_test_acc=args.target_test_acc,
+        label_smoothing=args.label_smoothing,
+        patience=args.patience,
+        gradient_clip=args.gradient_clip,
+        augment_fraction=args.augment_fraction,
         warmup_epochs=args.warmup_epochs,
         min_lr=args.min_lr,
         mixup_alpha=args.mixup_alpha,
@@ -162,18 +126,9 @@ def parse_args() -> TrainConfig:
         cutmix_alpha=args.cutmix_alpha,
         cutmix_prob=args.cutmix_prob,
         ema_decay=args.ema_decay,
-        mixup_decay=not args.no_mixup_decay,
-        cutmix_decay=not args.no_cutmix_decay,
-        finetune_epochs=args.finetune_epochs,
-        finetune_lr_factor=args.finetune_lr_factor,
-        balance_classes=not args.no_balance_classes,
-        save_optimizer=args.save_optimizer,
         device=device,
         pin_memory=pin_memory,
         drop_last=args.drop_last,
-        label_smoothing=args.label_smoothing,
-        patience=args.patience,
-        gradient_clip=args.gradient_clip,
     )
 
 
@@ -184,28 +139,17 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
-    preds = logits.argmax(dim=1)
-    correct = (preds == targets).sum().item()
-    return correct / targets.size(0)
-
-
 def mixup_batch(
-    images: torch.Tensor,
-    labels: torch.Tensor,
-    alpha: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
-    if alpha <= 0:
-        raise ValueError("Alpha must be positive for mixup.")
+    images: torch.Tensor, labels: torch.Tensor, alpha: float
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
     lam = np.random.beta(alpha, alpha)
     lam = max(lam, 1.0 - lam)
     index = torch.randperm(images.size(0), device=images.device)
-    mixed_images = lam * images + (1.0 - lam) * images[index]
-    labels_a, labels_b = labels, labels[index]
-    return mixed_images, labels_a, labels_b, float(lam)
+    mixed = lam * images + (1.0 - lam) * images[index]
+    return mixed, labels, labels[index], float(lam)
 
 
-def _rand_bbox(width: int, height: int, lam: float) -> tuple[int, int, int, int]:
+def _rand_bbox(width: int, height: int, lam: float) -> Tuple[int, int, int, int]:
     cut_ratio = math.sqrt(1.0 - lam)
     cut_w = int(width * cut_ratio)
     cut_h = int(height * cut_ratio)
@@ -221,36 +165,26 @@ def _rand_bbox(width: int, height: int, lam: float) -> tuple[int, int, int, int]
 
 
 def cutmix_batch(
-    images: torch.Tensor,
-    labels: torch.Tensor,
-    alpha: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
-    if alpha <= 0:
-        raise ValueError("Alpha must be positive for cutmix.")
+    images: torch.Tensor, labels: torch.Tensor, alpha: float
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
     lam = np.random.beta(alpha, alpha)
     lam = max(lam, 1.0 - lam)
-    batch_size, _, height, width = images.size()
-    index = torch.randperm(batch_size, device=images.device)
+    index = torch.randperm(images.size(0), device=images.device)
+    shuffled = images[index]
 
+    _, _, height, width = images.size()
     x1, x2, y1, y2 = _rand_bbox(width, height, lam)
     images = images.clone()
-    images[:, :, y1:y2, x1:x2] = images[index, :, y1:y2, x1:x2]
+    images[:, :, y1:y2, x1:x2] = shuffled[:, :, y1:y2, x1:x2]
 
-    adjusted_lam = 1.0 - ((x2 - x1) * (y2 - y1) / (width * height))
-    labels_a, labels_b = labels, labels[index]
-    return images, labels_a, labels_b, float(adjusted_lam)
+    adjusted_lam = 1.0 - (x2 - x1) * (y2 - y1) / (width * height)
+    return images, labels, labels[index], float(adjusted_lam)
 
 
 def mixup_criterion(
-    criterion: nn.Module,
-    predictions: torch.Tensor,
-    labels_a: torch.Tensor,
-    labels_b: Optional[torch.Tensor],
-    lam: float,
+    criterion: nn.Module, preds: torch.Tensor, targets_a: torch.Tensor, targets_b: torch.Tensor, lam: float
 ) -> torch.Tensor:
-    if labels_b is None:
-        return criterion(predictions, labels_a)
-    return lam * criterion(predictions, labels_a) + (1.0 - lam) * criterion(predictions, labels_b)
+    return lam * criterion(preds, targets_a) + (1.0 - lam) * criterion(preds, targets_b)
 
 
 @torch.no_grad()
@@ -259,6 +193,29 @@ def update_ema(model: nn.Module, ema_model: nn.Module, decay: float) -> None:
         ema_param.data.mul_(decay).add_(param.data, alpha=1.0 - decay)
     for ema_buffer, buffer in zip(ema_model.buffers(), model.buffers()):
         ema_buffer.data.copy_(buffer.data)
+
+
+def create_scheduler(
+    optimizer: optim.Optimizer,
+    config: TrainConfig,
+    steps_per_epoch: int,
+) -> Optional[optim.lr_scheduler.LambdaLR]:
+    if steps_per_epoch == 0:
+        return None
+
+    total_steps = config.epochs * steps_per_epoch
+    warmup_steps = min(total_steps, max(1, config.warmup_epochs * steps_per_epoch))
+    base_lr = config.learning_rate
+    min_ratio = config.min_lr / base_lr if base_lr > 0 else 0.0
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return max(min_ratio, float(step + 1) / warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return max(min_ratio, cosine)
+
+    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def train_one_epoch(
@@ -278,30 +235,30 @@ def train_one_epoch(
     ema_decay: Optional[float] = None,
 ) -> Dict[str, float]:
     model.train()
-    losses = 0.0
-    correct = 0
+    running_loss = 0.0
+    running_correct = 0
     total = 0
-    batches = 0
 
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device)
 
-        do_cutmix = cutmix_alpha > 0.0 and random.random() < cutmix_prob
-        do_mixup = mixup_alpha > 0.0 and random.random() < mixup_prob and not do_cutmix
+        apply_cutmix = cutmix_alpha > 0 and random.random() < cutmix_prob
+        apply_mixup = mixup_alpha > 0 and random.random() < mixup_prob and not apply_cutmix
 
-        if do_cutmix:
-            images, labels_a, labels_b, lam = cutmix_batch(images, labels, cutmix_alpha)
-        elif do_mixup:
-            images, labels_a, labels_b, lam = mixup_batch(images, labels, mixup_alpha)
+        if apply_cutmix:
+            images, targets_a, targets_b, lam = cutmix_batch(images, labels, cutmix_alpha)
+        elif apply_mixup:
+            images, targets_a, targets_b, lam = mixup_batch(images, labels, mixup_alpha)
         else:
-            labels_a = labels
-            labels_b = None
-            lam = 1.0
+            targets_a, targets_b, lam = labels, None, 1.0
 
         optimizer.zero_grad(set_to_none=True)
         outputs = model(images)
-        loss = mixup_criterion(criterion, outputs, labels_a, labels_b, lam)
+        if targets_b is not None:
+            loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+        else:
+            loss = criterion(outputs, targets_a)
         loss.backward()
 
         if gradient_clip is not None:
@@ -314,19 +271,18 @@ def train_one_epoch(
             update_ema(model, ema_model, ema_decay)
 
         batch_size = labels.size(0)
-        losses += loss.item() * batch_size
+        running_loss += loss.item() * batch_size
         preds = outputs.argmax(dim=1)
-        if labels_b is not None:
-            correct += lam * (preds == labels_a).sum().item()
-            correct += (1.0 - lam) * (preds == labels_b).sum().item()
+        if targets_b is not None:
+            running_correct += lam * (preds == targets_a).sum().item()
+            running_correct += (1.0 - lam) * (preds == targets_b).sum().item()
         else:
-            correct += (preds == labels).sum().item()
+            running_correct += (preds == labels).sum().item()
         total += batch_size
-        batches += 1
 
     return {
-        "loss": losses / total,
-        "accuracy": correct / total,
+        "loss": running_loss / total,
+        "accuracy": running_correct / total,
         "lr": optimizer.param_groups[0]["lr"],
     }
 
@@ -339,8 +295,8 @@ def evaluate(
     device: torch.device,
 ) -> Dict[str, float]:
     model.eval()
-    losses = 0.0
-    correct = 0
+    running_loss = 0.0
+    running_correct = 0
     total = 0
 
     for images, labels in loader:
@@ -350,75 +306,91 @@ def evaluate(
         loss = criterion(outputs, labels)
 
         batch_size = labels.size(0)
-        losses += loss.item() * batch_size
-        correct += (outputs.argmax(dim=1) == labels).sum().item()
+        running_loss += loss.item() * batch_size
+        running_correct += (outputs.argmax(dim=1) == labels).sum().item()
         total += batch_size
 
     return {
-        "loss": losses / total if total > 0 else 0.0,
-        "accuracy": correct / total if total > 0 else 0.0,
+        "loss": running_loss / total if total else 0.0,
+        "accuracy": running_correct / total if total else 0.0,
     }
 
 
-def create_scheduler(
-    optimizer: optim.Optimizer,
-    config: TrainConfig,
-    steps_per_epoch: int,
-) -> Optional[optim.lr_scheduler.LambdaLR]:
-    if steps_per_epoch == 0:
-        return None
-    total_steps = max(1, steps_per_epoch * config.epochs)
-    warmup_steps = min(total_steps, max(1, config.warmup_epochs * steps_per_epoch))
-    base_lr = config.learning_rate
-    min_lr = config.min_lr
-    min_ratio = min_lr / base_lr if base_lr > 0 else 0.0
+@torch.no_grad()
+def evaluate_tta(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> Dict[str, float]:
+    model.eval()
+    running_loss = 0.0
+    running_correct = 0
+    total = 0
 
-    def lr_lambda(step: int) -> float:
-        if step < warmup_steps:
-            return max(min_ratio, float(step + 1) / warmup_steps)
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return max(min_ratio, cosine)
+    for images, labels in loader:
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device)
 
-    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        logits_accum = None
+        loss_accum = 0.0
+        for transform in ("identity", "hflip"):
+            if transform == "hflip":
+                augmented = torch.flip(images, dims=[3])
+            else:
+                augmented = images
+            outputs = model(augmented)
+            loss_accum += criterion(outputs, labels).item()
+            if logits_accum is None:
+                logits_accum = outputs
+            else:
+                logits_accum += outputs
+
+        logits_accum /= 2.0
+        loss_accum /= 2.0
+
+        batch_size = labels.size(0)
+        running_loss += loss_accum * batch_size
+        running_correct += (logits_accum.argmax(dim=1) == labels).sum().item()
+        total += batch_size
+
+    return {
+        "loss": running_loss / total if total else 0.0,
+        "accuracy": running_correct / total if total else 0.0,
+    }
 
 
 def plot_history(history: Dict[str, Iterable[float]], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    figure = Path(output_dir) / "training_curves.png"
-
     epochs = range(1, len(history.get("train_loss", [])) + 1)
 
     plt.figure(figsize=(10, 6))
-    ax1 = plt.gca()
     if "train_loss" in history:
-        ax1.plot(epochs, history["train_loss"], label="Train Loss")
-    if "val_loss" in history and any(history["val_loss"]):
-        ax1.plot(epochs, history["val_loss"], label="Val Loss")
+        plt.plot(epochs, history["train_loss"], label="Train Loss")
+    if "val_loss" in history:
+        plt.plot(epochs, history["val_loss"], label="Val Loss")
     if "train_acc" in history:
-        ax1.plot(epochs, history["train_acc"], label="Train Acc")
-    if "val_acc" in history and any(history["val_acc"]):
-        ax1.plot(epochs, history["val_acc"], label="Val Acc")
-
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss / Accuracy")
-    ax1.set_title("Training Dynamics")
-    ax1.grid(True, linestyle="--", alpha=0.3)
-
-    lr_values = history.get("lr")
-    if lr_values:
-        ax2 = ax1.twinx()
-        ax2.plot(epochs, lr_values, label="Learning Rate", color="tab:gray", linestyle="--")
-        ax2.set_ylabel("Learning Rate")
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-    else:
-        ax1.legend(loc="upper right")
-
+        plt.plot(epochs, history["train_acc"], label="Train Acc")
+    if "val_acc" in history:
+        plt.plot(epochs, history["val_acc"], label="Val Acc")
+    if "test_acc_history" in history and history["test_acc_history"]:
+        plt.plot(
+            epochs[: len(history["test_acc_history"])],
+            history["test_acc_history"],
+            label="Test Acc (running)",
+        )
+    plt.xlabel("Epoch")
+    plt.ylabel("Metric")
+    plt.title("Training / Validation / Test Metrics")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.3)
     plt.tight_layout()
-    plt.savefig(figure, dpi=150)
+    plt.savefig(output_dir / "training_curves.png", dpi=150)
     plt.close()
+
+
+def _state_dict_to_cpu(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    return {key: tensor.detach().cpu() if torch.is_tensor(tensor) else tensor for key, tensor in state_dict.items()}
 
 
 def save_checkpoint(
@@ -428,28 +400,29 @@ def save_checkpoint(
     metrics: Dict[str, float],
     output_dir: Path,
     ema_model: Optional[nn.Module] = None,
-    include_optimizer: bool = True,
     filename: str = "best_model.pt",
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / filename
     state = {
         "epoch": epoch,
-        "model_state": model.state_dict(),
+        "model_state": _state_dict_to_cpu(model.state_dict()),
         "metrics": metrics,
     }
-    if include_optimizer:
-        state["optimizer_state"] = optimizer.state_dict()
     if ema_model is not None:
-        state["ema_state"] = ema_model.state_dict()
+        state["ema_state"] = _state_dict_to_cpu(ema_model.state_dict())
+
     try:
         torch.save(state, checkpoint_path)
     except RuntimeError as exc:
-        tmp_dir = Path(tempfile.gettempdir())
-        tmp_path = tmp_dir / (checkpoint_path.name + ".tmp")
-        print(f"Warning: primary checkpoint save failed ({exc}). Saving to temporary file {tmp_path}.")
-        torch.save(state, tmp_path)
-        shutil.move(tmp_path, checkpoint_path)
+        from tempfile import NamedTemporaryFile
+
+        print(f"Warning: checkpoint save failed ({exc}); retrying with legacy serialization.")
+        with NamedTemporaryFile(dir=str(output_dir), suffix=".pt", delete=False) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+        torch.save(state, tmp_path, _use_new_zipfile_serialization=False)
+        tmp_path.replace(checkpoint_path)
+
     return checkpoint_path
 
 
@@ -470,7 +443,7 @@ def main() -> None:
         seed=config.seed,
         pin_memory=config.pin_memory,
         drop_last=config.drop_last,
-        balance_classes=config.balance_classes,
+        augment_fraction=config.augment_fraction,
     )
 
     model = build_convnext_small(
@@ -478,8 +451,8 @@ def main() -> None:
         in_chans=3,
         drop_path_rate=config.drop_path_rate,
         head_dropout=config.head_dropout,
-    )
-    model.to(device)
+        pretrained=True,
+    ).to(device)
 
     ema_model = deepcopy(model)
     ema_model.to(device)
@@ -488,7 +461,6 @@ def main() -> None:
         param.requires_grad_(False)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
-
     optimizer = optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -498,39 +470,32 @@ def main() -> None:
     steps_per_epoch = len(train_loader)
     scheduler = create_scheduler(optimizer, config, steps_per_epoch)
 
-    best_val_acc = 0.0
-    best_epoch = -1
     history: Dict[str, list] = {
         "train_loss": [],
         "train_acc": [],
         "val_loss": [],
         "val_acc": [],
-        "lr": [],
+        "test_acc_history": [],
     }
-
+    best_val_acc = 0.0
+    best_epoch = -1
     epochs_without_improvement = 0
-    final_test_metrics: Optional[Dict[str, float]] = None
+    last_test_acc = None
 
     for epoch in range(1, config.epochs + 1):
         start_time = time.time()
 
-        if config.freeze_backbone_epochs and epoch <= config.freeze_backbone_epochs:
+        if epoch <= config.freeze_backbone_epochs:
             freeze_backbone(model, train_head_only=True)
         else:
             freeze_backbone(model, train_head_only=False)
 
-        ema_model.eval()
-        mixup_prob_epoch = config.mixup_prob
-        cutmix_prob_epoch = config.cutmix_prob
-        if config.mixup_decay and config.epochs > 0:
-            decay = max(0.0, 1.0 - (epoch - 1) / config.epochs)
-            mixup_prob_epoch *= decay
-        if config.cutmix_decay and config.epochs > 0:
-            decay = max(0.0, 1.0 - (epoch - 1) / config.epochs)
-            cutmix_prob_epoch *= decay
-        if config.finetune_epochs > 0 and epoch > config.epochs - config.finetune_epochs:
-            mixup_prob_epoch = 0.0
-            cutmix_prob_epoch = 0.0
+        # decay augmentation intensities near the end
+        mixup_prob = config.mixup_prob
+        cutmix_prob = config.cutmix_prob
+        if epoch > config.epochs * 0.7:
+            mixup_prob *= 0.2
+            cutmix_prob *= 0.2
 
         train_metrics = train_one_epoch(
             model,
@@ -541,119 +506,76 @@ def main() -> None:
             gradient_clip=config.gradient_clip,
             scheduler=scheduler,
             mixup_alpha=config.mixup_alpha,
-            mixup_prob=mixup_prob_epoch,
+            mixup_prob=mixup_prob,
             cutmix_alpha=config.cutmix_alpha,
-            cutmix_prob=cutmix_prob_epoch,
+            cutmix_prob=cutmix_prob,
             ema_model=ema_model,
             ema_decay=config.ema_decay,
         )
 
-        if val_loader is not None:
-            val_metrics = evaluate(ema_model, val_loader, criterion, device)
-        else:
-            val_metrics = {"loss": 0.0, "accuracy": 0.0}
+        val_metrics = (
+            evaluate(ema_model, val_loader, criterion, device) if val_loader else {"loss": 0.0, "accuracy": 0.0}
+        )
 
         history["train_loss"].append(train_metrics["loss"])
         history["train_acc"].append(train_metrics["accuracy"])
         history["val_loss"].append(val_metrics["loss"])
         history["val_acc"].append(val_metrics["accuracy"])
-        history["lr"].append(train_metrics.get("lr", optimizer.param_groups[0]["lr"]))
 
         elapsed = time.time() - start_time
         print(
             f"Epoch {epoch:03d}/{config.epochs} "
             f"Train Loss: {train_metrics['loss']:.4f} Acc: {train_metrics['accuracy']:.4f} "
             f"Val Loss: {val_metrics['loss']:.4f} Acc: {val_metrics['accuracy']:.4f} "
-            f"LR: {history['lr'][-1]:.2e} "
+            f"LR: {train_metrics['lr']:.2e} "
             f"Time: {elapsed:.1f}s"
         )
 
-        current_val_acc = val_metrics["accuracy"] if val_loader is not None else train_metrics["accuracy"]
-        if current_val_acc >= best_val_acc:
-            best_val_acc = current_val_acc
-            best_epoch = epoch
-            checkpoint_path = save_checkpoint(
-                model,
-                optimizer,
-                epoch,
-                metrics={"val_accuracy": best_val_acc, "val_loss": val_metrics["loss"]},
-                output_dir=config.output_dir,
-                ema_model=ema_model,
-                include_optimizer=config.save_optimizer,
-            )
-            print(f"  Saved checkpoint to {checkpoint_path}")
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-
-        if (
-            config.target_test_acc is not None
-            and test_loader is not None
-            and val_metrics["accuracy"] >= config.target_test_acc
-        ):
-            provisional_test = evaluate(ema_model, test_loader, criterion, device)
-            print(
-                f"  Provisional test check -> Loss: {provisional_test['loss']:.4f} "
-                f"Acc: {provisional_test['accuracy']:.4f}"
-            )
-            if provisional_test["accuracy"] >= config.target_test_acc:
-                final_test_metrics = provisional_test
-                print(
-                    f"Target test accuracy {config.target_test_acc:.3f} reached at epoch {epoch}. "
-                    "Stopping early."
+        if val_loader:
+            if val_metrics["accuracy"] >= best_val_acc:
+                best_val_acc = val_metrics["accuracy"]
+                best_epoch = epoch
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    epoch,
+                    {"val_accuracy": best_val_acc, "val_loss": val_metrics["loss"]},
+                    config.output_dir,
+                    ema_model=ema_model,
                 )
-                break
+                test_metrics = evaluate_tta(ema_model, test_loader, criterion, device)
+                last_test_acc = test_metrics["accuracy"]
+                epochs_without_improvement = 0
             else:
-                print(
-                    f"Test accuracy {provisional_test['accuracy']:.3f} below target "
-                    f"{config.target_test_acc:.3f}; continuing training."
-                )
+                epochs_without_improvement += 1
 
-        if config.patience and epochs_without_improvement >= config.patience:
-            print("Early stopping triggered.")
-            break
+            if config.patience and epochs_without_improvement >= config.patience:
+                print("Early stopping triggered.")
+                break
+
+        history["test_acc_history"].append(last_test_acc if last_test_acc is not None else 0.0)
 
     plot_history(history, config.output_dir)
-
-    (config.output_dir / "training_history.json").write_text(
-        json.dumps(history, indent=2)
-    )
+    (config.output_dir / "training_history.json").write_text(json.dumps(history, indent=2))
 
     print(f"Best epoch: {best_epoch} with val acc {best_val_acc:.4f}")
 
-    # Reload best checkpoint before testing
-    checkpoint = torch.load(config.output_dir / "best_model.pt", map_location=device)
-    model.load_state_dict(checkpoint["model_state"])
-    if "ema_state" in checkpoint:
-        ema_model.load_state_dict(checkpoint["ema_state"])
+    checkpoint_path = config.output_dir / "best_model.pt"
+    if checkpoint_path.exists():
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state"])
+        if "ema_state" in checkpoint:
+            ema_model.load_state_dict(checkpoint["ema_state"])
+        else:
+            ema_model.load_state_dict(checkpoint["model_state"])
     else:
-        ema_model.load_state_dict(checkpoint["model_state"])
+        ema_model.load_state_dict(model.state_dict())
+
     ema_model.to(device)
     ema_model.eval()
-
-    if final_test_metrics is None:
-        if test_loader is not None:
-            final_test_metrics = evaluate(ema_model, test_loader, criterion, device)
-        else:
-            final_test_metrics = {"loss": 0.0, "accuracy": 0.0}
-
-    print(
-        f"Test Loss: {final_test_metrics['loss']:.4f} "
-        f"Test Acc: {final_test_metrics['accuracy']:.4f}"
-    )
-
-    (config.output_dir / "test_metrics.json").write_text(
-        json.dumps(final_test_metrics, indent=2)
-    )
-
-    if (
-        config.target_test_acc is not None
-        and final_test_metrics["accuracy"] < config.target_test_acc
-    ):
-        print(
-            f"WARNING: Test accuracy {final_test_metrics['accuracy']:.3f} "
-            f"did not reach the target {config.target_test_acc:.3f}."
-        )
+    test_metrics = evaluate_tta(ema_model, test_loader, criterion, device)
+    print(f"Test Loss: {test_metrics['loss']:.4f} Test Acc: {test_metrics['accuracy']:.4f}")
+    (config.output_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2))
 
 
 if __name__ == "__main__":
