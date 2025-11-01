@@ -128,8 +128,6 @@ def prepare_yolo_dataset(
         with open(list_path, "w", encoding="utf-8") as list_file:
             for image_id in ids:
                 source_image_path = resolve_image_path(image_dirs[split], image_id)
-                list_file.write(f"{source_image_path.resolve()}\n")
-
                 target_image_path = image_dir / source_image_path.name
                 if not target_image_path.exists():
                     try:
@@ -140,6 +138,8 @@ def prepare_yolo_dataset(
                         # Symlink may be unsupported; fall back to copying the file once.
                         if not target_image_path.exists():
                             shutil.copy2(source_image_path, target_image_path)
+
+                list_file.write(f"{target_image_path.resolve()}\n")
 
                 label_path = label_dir / f"{image_id}.txt"
                 if split == "test":

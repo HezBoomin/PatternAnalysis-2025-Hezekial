@@ -14,4 +14,4 @@
 #SBATCH -e results/results.err
 
 conda activate lab-2
-python train.py
+python train.py --force-export --num-workers 0
