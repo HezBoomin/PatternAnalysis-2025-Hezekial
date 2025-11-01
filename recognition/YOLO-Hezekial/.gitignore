@@ -207,5 +207,5 @@ marimo/_lsp/
 __marimo__/
 
 results/
-.rangpur.runner
-.sync.sh
+rangpur.runner
+sync.sh

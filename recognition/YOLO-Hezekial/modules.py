@@ -118,7 +118,14 @@ class YOLOLesionDetector:
 
         # Update Ultralytics metadata map so exports/reporting show correct names.
         if self.config.class_names:
-            self.model.names = {idx: name for idx, name in enumerate(self.config.class_names)}
+            names_map = {idx: name for idx, name in enumerate(self.config.class_names)}
+            try:
+                self.model.names = names_map
+            except AttributeError:
+                if hasattr(self.model, "model") and hasattr(self.model.model, "names"):
+                    self.model.model.names = list(self.config.class_names)
+                elif hasattr(self.model, "overrides"):
+                    self.model.overrides["names"] = list(self.config.class_names)
 
     def _maybe_move_to_device(self) -> None:
         """Move the model to the configured device if supported."""

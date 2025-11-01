@@ -97,14 +97,14 @@ class ISICDetectionDataset(Dataset):
         if image_ids is not None:
             self.ids = list(image_ids)
         else:
-            self.ids = _discover_image_ids(self.image_dir)
+            self.ids = discover_image_ids(self.image_dir)
 
     def __len__(self) -> int:
         return len(self.ids)
 
     def __getitem__(self, index: int) -> Tuple[Tensor, Dict[str, Tensor]]:
         image_id = self.ids[index]
-        image_path = _resolve_image_path(self.image_dir, image_id)
+        image_path = resolve_image_path(self.image_dir, image_id)
         image = Image.open(image_path).convert("RGB")
 
         if self.image_size is not None:
@@ -139,7 +139,7 @@ class ISICDetectionDataset(Dataset):
             )
             return target
 
-        mask_path = _resolve_mask_path(self.mask_dir, image_id)
+        mask_path = resolve_mask_path(self.mask_dir, image_id)
         mask = Image.open(mask_path).convert("L")
 
         if self.image_size is not None:
@@ -147,7 +147,7 @@ class ISICDetectionDataset(Dataset):
 
         mask_np = (np.array(mask) > 0).astype(np.uint8)
         masks = torch.from_numpy(mask_np[None, ...])  # (1, H, W) – lesion assumed single instance
-        boxes = _mask_to_boxes(mask_np)
+        boxes = mask_to_boxes(mask_np)
 
         labels = torch.zeros((boxes.shape[0],), dtype=torch.int64)
         areas = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
@@ -170,7 +170,7 @@ class ISICDetectionDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 
-def _discover_image_ids(image_dir: Path) -> List[str]:
+def discover_image_ids(image_dir: Path) -> List[str]:
     """Return sorted image identifiers without file extensions."""
     ids: List[str] = []
     for extension in ("*.jpg", "*.jpeg", "*.png"):
@@ -181,7 +181,7 @@ def _discover_image_ids(image_dir: Path) -> List[str]:
     return ids
 
 
-def _resolve_image_path(image_dir: Path, image_id: str) -> Path:
+def resolve_image_path(image_dir: Path, image_id: str) -> Path:
     """Resolve the best matching image path for a given identifier."""
     for extension in (".jpg", ".jpeg", ".png"):
         candidate = image_dir / f"{image_id}{extension}"
@@ -190,7 +190,7 @@ def _resolve_image_path(image_dir: Path, image_id: str) -> Path:
     raise FileNotFoundError(f"Could not locate an image file for '{image_id}' in '{image_dir}'.")
 
 
-def _resolve_mask_path(mask_dir: Path, image_id: str) -> Path:
+def resolve_mask_path(mask_dir: Path, image_id: str) -> Path:
     """Retrieve the segmentation mask path for a given image id."""
     for extension in (".png", ".jpg", ".bmp"):
         candidate = mask_dir / f"{image_id}_segmentation{extension}"
@@ -208,7 +208,7 @@ def _pil_to_tensor(image: Image.Image) -> Tensor:
     return tensor
 
 
-def _mask_to_boxes(mask: np.ndarray) -> Tensor:
+def mask_to_boxes(mask: np.ndarray) -> Tensor:
     """
     Convert a binary mask into a tensor of bounding boxes in ``xyxy`` format.
     """
@@ -290,7 +290,7 @@ def create_dataloaders(
     Factory returning dataloaders for train/val/test splits.
     """
     train_dir, mask_dir, test_dir = config.paths.resolve()
-    all_ids = _discover_image_ids(train_dir)
+    all_ids = discover_image_ids(train_dir)
     train_ids, val_ids = split_image_ids(all_ids, config.val_split, config.seed)
 
     train_dataset = ISICDetectionDataset(
@@ -351,4 +351,8 @@ __all__ = [
     "create_dataloaders",
     "split_image_ids",
     "detection_collate_fn",
+    "discover_image_ids",
+    "resolve_image_path",
+    "resolve_mask_path",
+    "mask_to_boxes",
 ]

@@ -2,9 +2,11 @@ import argparse
 import csv
 import json
 import logging
+import os
 import random
+import shutil
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +14,15 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from dataset import DataModuleConfig, ISICDatasetPaths, ISICDetectionDataset, create_dataloaders
+from dataset import (
+    DataModuleConfig,
+    ISICDatasetPaths,
+    ISICDetectionDataset,
+    create_dataloaders,
+    mask_to_boxes,
+    resolve_image_path,
+    resolve_mask_path,
+)
 from modules import (
     DetectionResult,
     MeanAveragePrecision,
@@ -45,7 +55,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-split", type=float, default=0.2, help="Fraction reserved for validation.")
     parser.add_argument("--seed", type=int, default=13, help="Random seed for deterministic splits.")
     parser.add_argument("--img-size", type=int, default=640, help="Square image size used during export/training.")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of DataLoader workers.")
+    parser.add_argument("--num-workers", type=int, default=0, help="Number of DataLoader workers.")
     parser.add_argument(
         "--experiment-name",
         type=str,
@@ -79,19 +89,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def prepare_yolo_dataset(
-    train_dataset: ISICDetectionDataset,
-    val_dataset: ISICDetectionDataset,
-    test_dataset: ISICDetectionDataset,
+    train_ids: Sequence[str],
+    val_ids: Sequence[str],
+    test_ids: Sequence[str],
+    paths: ISICDatasetPaths,
     export_dir: Path,
     class_names: Iterable[str],
     force: bool = False,
 ) -> Path:
     """
     Export PyTorch datasets to a YOLO-compatible folder structure.
-
-    Images are resized according to the dataset configuration and written to
-    ``export_dir/images/{split}``. Bounding boxes are stored in YOLO text files
-    under ``labels/{split}``.
     """
     logging.info("Exporting datasets to YOLO format at %s", export_dir)
     yaml_path = export_dir / "isic.yaml"
@@ -99,51 +106,62 @@ def prepare_yolo_dataset(
         logging.info("Existing YOLO dataset detected at %s; reuse without re-export.", export_dir)
         return export_dir
 
-    splits = {
-        "train": train_dataset,
-        "val": val_dataset,
-        "test": test_dataset,
+    image_dirs = {
+        "train": Path(paths.root) / paths.train_images,
+        "val": Path(paths.root) / paths.train_images,
+        "test": Path(paths.root) / paths.test_images,
     }
-    for split, dataset in splits.items():
-        image_out_dir = export_dir / "images" / split
-        label_out_dir = export_dir / "labels" / split
-        image_out_dir.mkdir(parents=True, exist_ok=True)
-        label_out_dir.mkdir(parents=True, exist_ok=True)
 
-        original_transforms = getattr(dataset, "transforms", None)
-        if original_transforms is not None:
-            dataset.transforms = None
+    label_root = export_dir / "labels"
+    image_root = export_dir / "images"
+    label_root.mkdir(parents=True, exist_ok=True)
+    image_root.mkdir(parents=True, exist_ok=True)
 
-        try:
-            for idx in tqdm(range(len(dataset)), desc=f"Exporting {split}", unit="img"):
-                image_tensor, target = dataset[idx]
-                image_id = dataset.ids[idx]
-                image_path = image_out_dir / f"{image_id}.jpg"
-                label_path = label_out_dir / f"{image_id}.txt"
+    split_to_ids = {"train": train_ids, "val": val_ids, "test": test_ids}
+    for split, ids in split_to_ids.items():
+        list_path = export_dir / f"{split}.txt"
+        label_dir = label_root / split
+        image_dir = image_root / split
+        label_dir.mkdir(parents=True, exist_ok=True)
+        image_dir.mkdir(parents=True, exist_ok=True)
 
-                save_tensor_as_image(image_tensor, image_path)
-                boxes = target["boxes"]
-                labels = target["labels"]
+        with open(list_path, "w", encoding="utf-8") as list_file:
+            for image_id in ids:
+                source_image_path = resolve_image_path(image_dirs[split], image_id)
+                list_file.write(f"{source_image_path.resolve()}\n")
+
+                target_image_path = image_dir / source_image_path.name
+                if not target_image_path.exists():
+                    try:
+                        os.symlink(source_image_path, target_image_path)
+                    except FileExistsError:
+                        pass
+                    except OSError:
+                        # Symlink may be unsupported; fall back to copying the file once.
+                        if not target_image_path.exists():
+                            shutil.copy2(source_image_path, target_image_path)
+
+                label_path = label_dir / f"{image_id}.txt"
+                if split == "test":
+                    label_path.write_text("", encoding="utf-8")
+                    continue
+
+                mask_path = resolve_mask_path(Path(paths.root) / paths.train_masks, image_id)
+                mask = Image.open(mask_path).convert("L")
+                mask_np = (np.array(mask) > 0).astype(np.uint8)
+                boxes = mask_to_boxes(mask_np)
+                labels = torch.zeros((boxes.shape[0],), dtype=torch.int64)
 
                 write_yolo_labels(
                     label_path=label_path,
                     boxes=boxes,
                     labels=labels,
-                    width=image_tensor.shape[2],
-                    height=image_tensor.shape[1],
+                    width=mask_np.shape[1],
+                    height=mask_np.shape[0],
                 )
-        finally:
-            if original_transforms is not None:
-                dataset.transforms = original_transforms
 
     create_dataset_yaml(export_dir=export_dir, class_names=class_names)
     return export_dir
-
-
-def save_tensor_as_image(image_tensor: torch.Tensor, output_path: Path) -> None:
-    """Persist a normalised tensor (C, H, W) to disk as an 8-bit RGB JPEG."""
-    array = image_tensor.mul(255.0).clamp(0, 255).permute(1, 2, 0).cpu().numpy().astype(np.uint8)
-    Image.fromarray(array).save(output_path, format="JPEG", quality=95)
 
 
 def write_yolo_labels(
@@ -172,9 +190,9 @@ def create_dataset_yaml(export_dir: Path, class_names: Iterable[str]) -> Path:
     names = list(class_names)
     with open(yaml_path, "w", encoding="utf-8") as handle:
         handle.write(f"path: {export_dir.resolve()}\n")
-        handle.write("train: images/train\n")
-        handle.write("val: images/val\n")
-        handle.write("test: images/test\n")
+        handle.write("train: train.txt\n")
+        handle.write("val: val.txt\n")
+        handle.write("test: test.txt\n")
         handle.write("names:\n")
         for idx, name in enumerate(names):
             handle.write(f"  {idx}: {name}\n")
@@ -200,6 +218,10 @@ def train_model(
 ) -> Dict[str, Path]:
     """Launch Ultralytics training and return paths to useful artefacts."""
     logging.info("Starting YOLO training for %d epochs", epochs)
+    safe_workers = max(0, min(num_workers, os.cpu_count() or 0))
+    if safe_workers != num_workers:
+        logging.info("Adjusting worker count from %d to %d", num_workers, safe_workers)
+
     detector.model.train(
         data=str(data_yaml),
         epochs=epochs,
@@ -210,7 +232,7 @@ def train_model(
         exist_ok=True,
         device=detector.config.device,
         patience=patience,
-        workers=num_workers,
+        workers=safe_workers,
     )
 
     trainer = detector.model.trainer
@@ -383,7 +405,7 @@ def main() -> None:
         val_split=args.val_split,
         seed=args.seed,
         batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        num_workers=max(0, min(args.num_workers, os.cpu_count() or 0)),
         image_size=(args.img_size, args.img_size),
     )
     dataloaders = create_dataloaders(data_config)
@@ -394,9 +416,10 @@ def main() -> None:
     # Export dataset for Ultralytics training
     prepared_dir = output_dir / "yolo_dataset"
     dataset_dir = prepare_yolo_dataset(
-        train_dataset,
-        val_dataset,
-        test_dataset,
+        train_dataset.ids,
+        val_dataset.ids,
+        test_dataset.ids,
+        paths,
         prepared_dir,
         class_names=class_names,
         force=args.force_export,
