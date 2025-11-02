@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
-import shutil
 import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional
 
 import matplotlib
 
@@ -24,7 +23,7 @@ from modules import build_convnext_small
 
 DEFAULT_DATA_ROOT = Path("/home/groups/comp3710/ADNI/AD_NC")
 DEFAULT_METADATA_PATH = Path("/home/groups/comp3710/ADNI/meta_data_with_label.json")
-DEFAULT_OUTPUT_DIR = Path("/tmp/results2")
+DEFAULT_OUTPUT_DIR = Path("results")
 
 
 @dataclass
@@ -32,7 +31,7 @@ class TrainConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     metadata_path: Optional[Path] = DEFAULT_METADATA_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 120
+    epochs: int = 5
     batch_size: int = 16
     learning_rate: float = 3e-5
     weight_decay: float = 5e-3
@@ -53,18 +52,16 @@ class TrainConfig:
 
 
 def parse_args() -> TrainConfig:
-    parser = argparse.ArgumentParser(description="Train ConvNeXt-Small for AD vs NC classification.")
+    parser = argparse.ArgumentParser(description="ConvNeXt-Small training with LR/WD grid search.")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--metadata-path", type=Path, default=DEFAULT_METADATA_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=3e-5, help="Learning rate.")
-    parser.add_argument("--weight-decay", type=float, default=5e-3)
+    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--valid-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--drop-path-rate", type=float, default=0.1)
     parser.add_argument("--head-dropout", type=float, default=0.2)
     parser.add_argument("--label-smoothing", type=float, default=0.05)
@@ -75,7 +72,6 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--no-pin-memory", action="store_true")
     parser.add_argument("--drop-last", action="store_true")
-    parser.add_argument("--no-pretrained", action="store_true", help="Do not load ImageNet weights.")
 
     args = parser.parse_args()
     if args.pin_memory and args.no_pin_memory:
@@ -90,12 +86,10 @@ def parse_args() -> TrainConfig:
         output_dir=args.output_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        learning_rate=args.lr,
-        weight_decay=args.weight_decay,
+        image_size=args.image_size,
         valid_split=args.valid_split,
         seed=args.seed,
         num_workers=args.num_workers,
-        image_size=args.image_size,
         drop_path_rate=args.drop_path_rate,
         head_dropout=args.head_dropout,
         label_smoothing=args.label_smoothing,
@@ -176,6 +170,7 @@ def evaluate(
     return running_loss / total if total else 0.0, running_correct / total if total else 0.0
 
 
+@torch.no_grad()
 def evaluate_tta(
     model: nn.Module,
     loader: DataLoader,
@@ -232,19 +227,15 @@ def plot_history(history: Dict[str, Iterable[float]], output_dir: Path) -> None:
     plt.legend()
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.tight_layout()
-    plt.savefig(output_dir / "training_curves2.png", dpi=150)
+    plt.savefig(output_dir / "training_curves.png", dpi=150)
     plt.close()
-
-
-def _to_cpu_state(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    return {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in state.items()}
 
 
 def save_checkpoint(model: nn.Module, path: Path, epoch: int, metrics: Dict[str, float]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     state = {
         "epoch": epoch,
-        "model_state": _to_cpu_state(model.state_dict()),
+        "model_state": {k: (v.detach().cpu() if torch.is_tensor(v) else v) for k, v in model.state_dict().items()},
         "metrics": metrics,
     }
     try:
@@ -264,8 +255,6 @@ def main() -> None:
     set_seed(config.seed)
     device = torch.device(config.device)
 
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-
     train_loader, val_loader, test_loader = create_dataloaders(
         data_root=config.data_root,
         metadata_path=config.metadata_path,
@@ -279,6 +268,9 @@ def main() -> None:
         augment_fraction=config.augment_fraction,
     )
 
+    best_lr = config.learning_rate
+    best_wd = config.weight_decay
+    criterion = nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
     model = build_convnext_small(
         num_classes=2,
         in_chans=3,
@@ -286,22 +278,10 @@ def main() -> None:
         head_dropout=config.head_dropout,
         pretrained=False,
     ).to(device)
-
-    criterion = nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-    )
+    optimizer = optim.AdamW(model.parameters(), lr=best_lr, weight_decay=best_wd)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
 
-    history: Dict[str, list] = {
-        "train_loss": [],
-        "train_acc": [],
-        "val_loss": [],
-        "val_acc": [],
-        "test_acc": [],
-    }
+    history: Dict[str, list] = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "test_acc": []}
     best_val_acc = 0.0
     best_epoch = -1
     epochs_without_improvement = 0
@@ -317,9 +297,8 @@ def main() -> None:
             device,
             gradient_clip=config.gradient_clip,
         )
-
         val_loss, val_acc = evaluate(model, val_loader, criterion, device) if val_loader else (0.0, 0.0)
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        _, test_acc = evaluate(model, test_loader, criterion, device)
 
         scheduler.step()
 
@@ -344,7 +323,7 @@ def main() -> None:
                 best_epoch = epoch
                 save_checkpoint(
                     model,
-                    config.output_dir / "best_model2.pt",
+                    config.output_dir / "best_model.pt",
                     epoch,
                     {"val_accuracy": val_acc, "val_loss": val_loss, "test_accuracy": test_acc},
                 )
@@ -361,7 +340,7 @@ def main() -> None:
 
     print(f"Best epoch: {best_epoch} with val acc {best_val_acc:.4f}")
 
-    checkpoint_path = config.output_dir / "best_model2.pt"
+    checkpoint_path = config.output_dir / "best_model.pt"
     if checkpoint_path.exists():
         state = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(state["model_state"])
@@ -371,13 +350,6 @@ def main() -> None:
     (config.output_dir / "test_metrics.json").write_text(
         json.dumps({"test_loss": final_test_loss, "test_accuracy": final_test_acc}, indent=2)
     )
-
-    if config.output_dir == DEFAULT_OUTPUT_DIR:
-        mirror_dir = Path("results2")
-        mirror_dir.mkdir(parents=True, exist_ok=True)
-        for artifact in config.output_dir.glob("*"):
-            if artifact.is_file():
-                shutil.copy2(artifact, mirror_dir / artifact.name)
 
 
 if __name__ == "__main__":

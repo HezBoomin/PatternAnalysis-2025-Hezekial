@@ -133,26 +133,7 @@ def create_default_transforms(
                 ],
                 p=0.5,
             ),
-            transforms.RandomApply(
-                [
-                    transforms.ColorJitter(
-                        brightness=0.15,
-                        contrast=0.15,
-                        saturation=0.0,
-                        hue=0.0,
-                    )
-                ],
-                p=0.4,
-            ),
-            transforms.RandomAdjustSharpness(sharpness_factor=1.5, p=0.3),
-            transforms.RandomAutocontrast(p=0.3),
             transforms.ToTensor(),
-            transforms.RandomErasing(
-                p=0.25,
-                scale=(0.02, 0.15),
-                ratio=(0.3, 3.3),
-                value="random",
-            ),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
     else:
