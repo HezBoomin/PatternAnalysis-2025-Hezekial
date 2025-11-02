@@ -1,4 +1,9 @@
 # Improved U-Net for OASIS Brain Segmentation
+Project: Segment the 2D OASIS brain data set with an Improved UNet [Easy]
+
+Name: Hezekial Octora Yudha Tampubolon
+
+Student ID: 49058466
 
 ## Problem Description
 
@@ -12,7 +17,9 @@ The training approach starts with grayscale brain MRI slices at 256×256 resolut
 
 ## Model Architecture
 
-![Improved U-Net Architecture](assets/improved_unet.png)
+<p align="center">
+  <img src="assets/improved_unet.png" alt="Training Curves" width="80%">
+</p>
 
 *Figure: Improved U-Net architecture showing the encoder pathway (left, blue blocks) progressively downsampling through four stages, a bottleneck with residual connections, and the decoder pathway (right, orange blocks) with attention-gated skip connections (dashed arrows) that merge encoder features with upsampled decoder features. Each block incorporates residual connections, group normalization, and channel attention mechanisms. Deep supervision outputs are generated at multiple decoder scales (green arrows).*
 
@@ -61,7 +68,7 @@ This architecture enables the network to learn hierarchical representations, fro
 └── README.md           # This file
 ```
 
-## Dependencies & Reproducibility
+## Dependencies
 
 I trained and evaluated the model with these packages:
 
@@ -105,7 +112,7 @@ The plots below summarise the learning dynamics:
 
 Validation loss keeps decreasing while mean Dice stabilises around 0.94, indicating good generalisation without overfitting.
 
-**Test-set performance.** Using the trained checkpoint (`runs/improved-unet/best_model.pt`) and the evaluation command from above, `predict.py` reports the following metrics on the held-out *test* split:
+ Using the trained best model and the evaluation results from above, `predict.py` reports the following metrics on the held-out test split:
 
 ```
 Per-class Dice (BG / GM / WM / CSF): [0.9967, 0.9230, 0.9108, 0.9516]
@@ -118,15 +125,15 @@ Every individual class exceeds the required 0.90 Dice threshold on the test data
 - White matter 0.9108 → 1.1 pp above the requirement  
 - CSF 0.9516 → strong margin
 
-Because `predict.py` directly loads the best training checkpoint and runs inference on the test loader (no training steps), these numbers reflect pure generalisation performance. The script logs these metrics and writes the same visual overlays each time, so rerunning it with the identical checkpoint reproduces both the numbers and the qualitative examples.
+Because `predict.py` directly loads the best training checkpoint and runs inference on the test loader (no training steps), these numbers reflect pure generalisation performance. The script also saves class probabilities and segmentation masks, so the outputs are reproducible simply by rerunning the same command on the same checkpoint.
 
-Example qualitative results are included in `runs/improved-unet/predictions/prediction_panel.png`:
+Below is the example results:
 
 <p align="center">
   <img src="assets/prediction_panel.png" alt="Prediction Panel" width="55%">
 </p>
 
-Each panel overlays the predicted segmentation (cool colours) and the ground-truth mask (warm colours) on top of the MRI slice. You can see the network tracing the outline of the cortex and the ventricles cleanly, with only small wobbles in the tricky mixed-tissue areas. These samples were drawn from the test set during the `predict.py` run above, which further demonstrates that the ≥ 0.9 Dice criterion is satisfied visually as well as numerically.
+Each panel overlays the predicted segmentation (cool colours) and the ground-truth mask (warm colours) on top of the MRI slice. The segmentation captures the cortical boundaries and ventricles pretty accurately, with only minor uncertainty in regions where tissues blend together. These samples were drawn from the test set during the `predict.py` run, which further demonstrates that the ≥ 0.9 Dice criterion is satisfied visually as well as numerically.
 
 ## References
 
