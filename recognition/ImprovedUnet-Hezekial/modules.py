@@ -1,3 +1,16 @@
+"""
+Model components for the improved U-Net segmentation pipeline.
+
+Import the pieces you need, for example:
+    from modules import build_improved_unet, DiceLoss
+    model = build_improved_unet()
+    criterion = DiceLoss()
+
+`ImprovedUNet` combines residual blocks, squeeze-excite attention and deep
+supervision, while helper utilities (Dice metrics, model factory) are meant to
+be reused across training and inference scripts.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -396,4 +409,3 @@ def build_improved_unet(config: Union[UNetConfig, dict, None] = None) -> Improve
         deep_supervision=cfg.deep_supervision,
     )
     return model
-
