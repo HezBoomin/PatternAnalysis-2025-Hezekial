@@ -8,6 +8,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,21 +25,55 @@ from modules import DiceLoss, ImprovedUNet, UNetConfig, build_improved_unet, dic
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Improved U-Net on OASIS brain dataset.")
-    parser.add_argument("--data-root", type=Path, required=True, help="Root directory of the OASIS PNG dataset.")
-    parser.add_argument("--output-dir", type=Path, default=Path("./runs"), help="Directory to store checkpoints and logs.")
-    parser.add_argument("--epochs", type=int, default=50, help="Training epochs.")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="Root directory of the OASIS PNG dataset. "
+        "If omitted, tries $OASIS_DATA_ROOT or /home/groups/comp3710/OASIS.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("./runs/improved-unet"),
+        help="Directory to store checkpoints and logs.",
+    )
+    parser.add_argument("--epochs", type=int, default=80, help="Training epochs.")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for all splits.")
     parser.add_argument("--lr", type=float, default=2e-4, help="Initial learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay.")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes.")
     parser.add_argument("--image-size", type=int, default=256, help="Square crop/resize side length.")
     parser.add_argument("--no-augment", action="store_true", help="Disable training data augmentation.")
-    parser.add_argument("--deep-supervision-weight", type=float, default=0.4, help="Weight for each auxiliary decoder head loss.")
+    parser.add_argument(
+        "--deep-supervision-weight", type=float, default=0.4, help="Weight for each auxiliary decoder head loss."
+    )
     parser.add_argument("--dice-weight", type=float, default=1.0, help="Scale factor for Dice loss component.")
     parser.add_argument("--ce-weight", type=float, default=1.0, help="Scale factor for CrossEntropy loss component.")
     parser.add_argument("--resume", type=Path, default=None, help="Optional checkpoint path to resume training.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     return parser.parse_args()
+
+
+def resolve_data_root(cli_value: Path | None) -> Path:
+    """
+    Locate the dataset root using CLI input, environment variable, or default path.
+    """
+    candidates: List[Path] = []
+    if cli_value is not None:
+        candidates.append(cli_value.expanduser())
+    env_value = os.environ.get("OASIS_DATA_ROOT")
+    if env_value:
+        candidates.append(Path(env_value).expanduser())
+    candidates.append(Path("/home/groups/comp3710/OASIS"))
+
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError(
+        "Could not locate the OASIS dataset. "
+        "Pass --data-root, configure $OASIS_DATA_ROOT, or place the data under /home/groups/comp3710/OASIS."
+    )
 
 
 def set_seed(seed: int) -> None:
@@ -300,8 +335,10 @@ def main() -> None:
     device = prepare_device()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    data_root = resolve_data_root(args.data_root)
+
     data_config = DataConfig(
-        root=args.data_root,
+        root=data_root,
         batch_size=args.batch_size,
         image_size=args.image_size,
         num_classes=4,
@@ -346,6 +383,7 @@ def main() -> None:
         history = checkpoint.get("history", history)
         print(f"Resumed from {args.resume} at epoch {start_epoch}.")
 
+    best_path = args.output_dir / "best_model.pt"
     for epoch in range(start_epoch, args.epochs + 1):
         train_loss, train_dice = train_one_epoch(
             model,
@@ -393,7 +431,7 @@ def main() -> None:
                     "scaler_state": scaler.state_dict() if scaler is not None else None,
                     "best_val_dice": best_val_dice,
                     "history": history,
-                    "args": vars(args),
+                    "args": {**vars(args), "data_root": str(data_root)},
                 },
                 best_path,
             )
@@ -408,7 +446,7 @@ def main() -> None:
                 "scaler_state": scaler.state_dict() if scaler is not None else None,
                 "best_val_dice": best_val_dice,
                 "history": history,
-                "args": vars(args),
+                "args": {**vars(args), "data_root": str(data_root)},
             },
             latest_path,
         )
@@ -451,7 +489,7 @@ def main() -> None:
             "dice_per_class": test_dice_per_class.tolist(),
         },
         "best_val_dice": float(best_val_dice),
-        "args": vars(args),
+        "args": {**vars(args), "data_root": str(data_root)},
     }
 
     metrics_path = args.output_dir / "metrics.json"
@@ -461,4 +499,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
