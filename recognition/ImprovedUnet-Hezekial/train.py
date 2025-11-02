@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 import os
+import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -372,7 +373,10 @@ def main() -> None:
     }
 
     if args.resume and args.resume.exists():
-        checkpoint = torch.load(args.resume, map_location=device)
+        try:
+            checkpoint = torch.load(args.resume, map_location=device)
+        except pickle.UnpicklingError:
+            checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
         scheduler.load_state_dict(checkpoint["scheduler_state"])
@@ -459,7 +463,10 @@ def main() -> None:
     plot_history(history, args.output_dir)
 
     # Evaluate the best checkpoint on the test set for final reporting.
-    best_checkpoint = torch.load(best_path, map_location=device)
+    try:
+        best_checkpoint = torch.load(best_path, map_location=device)
+    except pickle.UnpicklingError:
+        best_checkpoint = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(best_checkpoint["model_state"])
 
     test_loss, test_dice, test_dice_per_class = evaluate(

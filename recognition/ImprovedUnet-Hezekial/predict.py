@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import pickle
 from typing import List, Tuple
 
 import matplotlib.pyplot as plt
@@ -47,7 +48,10 @@ def load_model(checkpoint_path: Path, device: torch.device) -> torch.nn.Module:
     )
     model = build_improved_unet(config).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+    except pickle.UnpicklingError:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state", checkpoint)
     model.load_state_dict(state_dict)
     model.eval()
@@ -216,4 +220,3 @@ if __name__ == "__main__":
     import math
 
     main()
-
