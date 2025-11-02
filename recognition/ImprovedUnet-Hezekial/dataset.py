@@ -1,3 +1,12 @@
+"""
+Dataset utilities and dataloaders for the OASIS brain MRI slices.
+
+Typical usage:
+    from dataset import DataConfig, create_dataloaders
+    loaders = create_dataloaders(DataConfig(root="/path/to/OASIS"))
+    batch = next(iter(loaders["train"]))
+"""
+
 from __future__ import annotations
 
 import random
