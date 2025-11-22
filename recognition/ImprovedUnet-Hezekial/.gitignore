@@ -209,3 +209,6 @@ __marimo__/
 results/
 rangpur.runner
 sync.sh
+.
+./ConvNeXt-hezekial/
+.DS_Store
